@@ -1,0 +1,7 @@
+- [x] `DrumRobot2/src/PathManager.cpp` 수정: `clearCommandBuffers` 내부의 큐 초기화에 `bufferMutex` 락 적용
+- [x] `DrumRobot2/src/PathManager.cpp` 수정: `pushCommandBuffer` 내부의 큐 삽입에 `bufferMutex` 락 적용
+- [x] `DrumRobot2/src/CanManager.cpp` 수정: `setCANFrame` 내부의 큐 `empty()` 및 `pop()` 검사에 `bufferMutex` 락 적용
+- [x] `DrumRobot2/src/DrumRobot.cpp` 수정: `runPlayProcess` 내부 `is_resuming` 블록에 `pathManager.endOfPlayCommand = false` 추가
+- [x] `make -j4` 로 빌드 성공 확인
+- [x] `log.md`에 수정 사항 기록
+- [x] `walkthrough.md` 업데이트
