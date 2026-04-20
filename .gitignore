@@ -35,6 +35,7 @@ phil_robot/third_party/downloads_whl/
 
 # legacy mock/simulator workspace (already tracked files remain tracked)
 phil_intheloop/
+legacy/
 
 
 # --- [4] IDE 설정 및 시스템 파일 ---
