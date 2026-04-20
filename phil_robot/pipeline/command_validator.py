@@ -211,7 +211,7 @@ def validate_motion_allowed(command, robot_state):
     current_state = robot_state.get("state", 0)
     if current_state == 2:
         return False, f"연주 중이므로 동작 명령 차단: {command}"
-    if current_state == 4:
+    if current_state == 6:
         return False, f"에러 상태이므로 동작 명령 차단: {command}"
 
     if not robot_state.get("is_fixed", True):

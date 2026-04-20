@@ -76,6 +76,7 @@ public:
     void genAndPushAddStance(string flagName);
     void initPlayStateValue();
     void processLine(MatrixXd &measureMatrix);
+    void clearCommandBuffers();
 
     // DXL
     std::queue<vector<vector<float>>> dxlCommandBuffer;

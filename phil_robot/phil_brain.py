@@ -214,12 +214,12 @@ def main():
             if audio_data is None:
                 continue
 
-            robot_state = get_robot_state_snapshot()
 
-            
             user_text = transcribe_user_speech(stt_model, audio_data)
             if not user_text:
                 continue
+
+            robot_state = get_robot_state_snapshot()
 
             # clarification 대기 중인지 안내한다.
             if session.pending_clarification_q:

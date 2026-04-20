@@ -37,10 +37,8 @@ TMotor::TMotor(uint32_t nodeId, const std::string &motorType)
 }
 
 void TMotor::clearCommandBuffer(){
-    while (!commandBuffer.empty())
-    {
-        commandBuffer.pop();
-    }
+    std::lock_guard<std::mutex> lock(bufferMutex);
+    std::queue<TMotorData>().swap(commandBuffer);
 }
 
 float TMotor::jointAngleToMotorPosition(float jointAngle)
@@ -124,10 +122,8 @@ MaxonMotor::MaxonMotor(uint32_t nodeId)
 }
 
 void MaxonMotor::clearCommandBuffer(){
-    while (!commandBuffer.empty())
-    {
-        commandBuffer.pop();
-    }
+    std::lock_guard<std::mutex> lock(bufferMutex);
+    std::queue<MaxonData>().swap(commandBuffer);
 }
 
 float MaxonMotor::jointAngleToMotorPosition(float jointAngle)

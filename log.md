@@ -3,6 +3,34 @@
 프로젝트에서 의미 있는 변경을 할 때마다 한국시간(KST, UTC+9) 기준의 날짜, 시간, 요약을 기록합니다.
 최신 항목이 위로 오도록 추가합니다.
 
+## 2026-04-20
+- 15:53 KST (UTC+9) — 문서 현행화: README 및 아키텍처 문서에 점진적 파일 기반 실행(Incremental File-Based Execution) 및 일시정지/재개(Pause/Resume) 매커니즘 반영
+  - 수정 파일: `README.md`, `phil_robot/docs/LLM_PIPELINE_ARCHITECTURE_KR.md`
+  - 메모: 전역 버퍼링(Global trajectory buffering)에서 점진적 실행 모델로 변경된 사항과 `s` (정지/일시정지) 명령이 버퍼를 즉각 플러시하여 인터럽트/재개 가능하게 된 내용을 문서에 추가함.
+
+## 2026-04-20
+- 17:16 KST (UTC+9) — 문서 현행화: 전체 파이프라인의 최신 함수 명세서 추가 및 아키텍처 문서 연결
+  - 추가/수정 파일: `phil_robot/docs/CURRENT_FUNCTION_SPECS_KR.md`, `phil_robot/docs/LLM_PIPELINE_ARCHITECTURE_KR.md`
+  - 메모: 다수의 AI 에이전트 작업으로 인해 꼬여있던 `brain_pipeline.py`, `robot_graph.py` 등의 내부 역할을 맵핑한 최신 함수 명세서(Artifact)를 새로 작성함. 기존 아키텍처 문서에는 현재 코드의 Patch-work 상태에 대한 솔직한 메모와 새 명세서 링크를 추가함.
+
+## 2026-04-20
+- 15:15 KST (UTC+9) — fix: 연주 일시정지(pause) 및 재개(resume) 시 로봇이 무한 대기(Hang)에 빠지는 문제 해결
+  - 수정 파일: `DrumRobot2/src/PathManager.cpp`, `DrumRobot2/src/CanManager.cpp`, `DrumRobot2/src/DrumRobot.cpp`
+  - 메모:
+    - **스레드 락 적용**: 메인 스레드(`clearCommandBuffers`, `pushCommandBuffer`)와 송신 스레드(`setCANFrame`의 `empty()`, `pop()`)가 큐에 동시 접근하여 발생하는 메모리 충돌(Race Condition)을 방지하기 위해 모터 객체의 `bufferMutex`에 `std::lock_guard`를 씌움.
+    - **Resume 시 플래그 리셋**: `runPlayProcess` 내 `is_resuming` 블록에서 `pathManager.endOfPlayCommand = false;`를 추가하여 큐 초기화 직후 완료 플래그가 비정상적으로 유지되어 다음 파일 처리가 꼬이는 현상 방지.
+
+- 14:35 KST (UTC+9) — fix: 드럼 연주 파일/마디 생성 도중 pause(일시정지) 명령이 즉시 반영되지 않고 마디가 다 끝날 때까지 대기하던 문제 해결
+  - 수정 파일: `DrumRobot2/include/managers/PathManager.hpp`, `DrumRobot2/src/PathManager.cpp`, `DrumRobot2/src/DrumRobot.cpp`
+  - 메모: `PathManager`에 `clearCommandBuffers()`를 추가해 모든 내부 큐(`taskSpaceQueue` 등)와 각 모터의 `commandBuffer`를 즉시 비우도록 함. `DrumRobot::runPlayProcess`의 `while(readMeasure)` (파일 읽기 및 명령 버퍼 큐잉) 루프 및 대기 루프 내에서 pause 명령을 감지하면 즉시 버퍼를 비우고 루프를 탈출해 `Pause` 상태로 전환되도록 수정.
+
+- 11:09 KST (UTC+9) — fix: Pause 상태(4)를 Error(6)로 잘못 판단하던 버그 2건 수정
+  - 수정 파일: `phil_robot/pipeline/command_validator.py`, `DrumRobot2/src/DrumRobot.cpp`
+  - 메모: Main enum: Pause=4, Error=6. Python command_validator가 state==4를 "에러 상태"로 차단 → state==6으로 정정. C++ makeStateJson도 state_id==4에서 error_message 표시 → state_id==6으로 정정. Pause 중 'h' 명령이 "에러 상태이므로 차단" 되던 문제 해소.
+- 11:09 KST (UTC+9) — feat: DrumRobot2 파일 단위 pause/resume 구현
+  - 수정 파일: `DrumRobot2/src/DrumRobot.cpp`
+  - 메모: `runPlayProcess()` 파일별 처리 블록에 실행 완료 대기 루프 추가. pause 수신 시 즉시 return 하지 않고 `file_pause` 플래그만 세운 뒤 버퍼가 완전히 소진된 후에 Pause로 전환 (deferred pause). 버퍼 소진 후 `play_file_index++` → resume 시 다음 파일부터 재연주. 기존 첫-파일 동기화 대기, 최종 processLine 블록, 최종 대기 루프 제거. 박자 단위 재개는 미구현.
+
 ## 2026-04-17
 - 23:40 KST (UTC+9) — feat: OpenAI GPT 백엔드 지원 추가 (PHIL_LLM_BACKEND=openai)
   - 수정 파일: `phil_robot/config.py`, `phil_robot/pipeline/llm_interface.py`

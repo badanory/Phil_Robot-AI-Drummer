@@ -101,6 +101,33 @@ void PathManager::processLine(MatrixXd &measureMatrix)
     }
 }
 
+void PathManager::clearCommandBuffers()
+{
+    // 모터의 명령 버퍼 비우기
+    for (auto &motor_pair : motors)
+    {
+        if (std::shared_ptr<TMotor> tMotor = std::dynamic_pointer_cast<TMotor>(motor_pair.second))
+        {
+            std::lock_guard<std::mutex> lock(tMotor->bufferMutex);
+            std::queue<TMotorData>().swap(tMotor->commandBuffer);
+        }
+        else if (std::shared_ptr<MaxonMotor> maxonMotor = std::dynamic_pointer_cast<MaxonMotor>(motor_pair.second))
+        {
+            std::lock_guard<std::mutex> lock(maxonMotor->bufferMutex);
+            std::queue<MaxonData>().swap(maxonMotor->commandBuffer);
+        }
+    }
+
+    // PathManager의 내부 큐 비우기
+    std::queue<TaskSpaceTrajectory>().swap(taskSpaceQueue);
+    std::queue<WaistParameter>().swap(waistParameterQueue);
+    std::queue<HitTrajectory>().swap(hitQueue);
+    std::queue<PedalTrajectory>().swap(pedalQueue);
+    
+    std::lock_guard<std::mutex> lock(dxlBufferMutex);
+    std::queue<vector<vector<float>>>().swap(dxlCommandBuffer);
+}
+
 // Private
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -406,7 +433,10 @@ void PathManager::pushAddStance(VectorXd &Q1, VectorXd &Q2)
                         newData.velocityERPM = tMotor->cwDir * Vt[can_id] * tMotor->pole * tMotor->gearRatio * 60.0 / 2.0 / M_PI;
                     }
                     newData.useBrake = 0;
-                    tMotor->commandBuffer.push(newData);
+                    {
+                        std::lock_guard<std::mutex> lock(tMotor->bufferMutex);
+                        tMotor->commandBuffer.push(newData);
+                    }
 
                     tMotor->finalMotorPosition = newData.position;
                 }
@@ -420,7 +450,10 @@ void PathManager::pushAddStance(VectorXd &Q1, VectorXd &Q2)
                         newData.mode = maxonMotor->CSP;
                         newData.kp = 0.0;
                         newData.kd = 0.0;
-                        maxonMotor->commandBuffer.push(newData);
+                        {
+                            std::lock_guard<std::mutex> lock(maxonMotor->bufferMutex);
+                            maxonMotor->commandBuffer.push(newData);
+                        }
 
                         maxonMotor->finalMotorPosition = newData.position;
                     }
@@ -459,7 +492,10 @@ void PathManager::pushAddStance(VectorXd &Q1, VectorXd &Q2)
                         newData.velocityERPM = 0.0;
                     }
                     newData.useBrake = 0;
-                    tMotor->commandBuffer.push(newData);
+                    {
+                        std::lock_guard<std::mutex> lock(tMotor->bufferMutex);
+                        tMotor->commandBuffer.push(newData);
+                    }
                 }
                 else if (std::shared_ptr<MaxonMotor> maxonMotor = std::dynamic_pointer_cast<MaxonMotor>(entry.second))
                 {
@@ -471,7 +507,10 @@ void PathManager::pushAddStance(VectorXd &Q1, VectorXd &Q2)
                         newData.mode = maxonMotor->CSP;
                         newData.kp = 0.0;
                         newData.kd = 0.0;
-                        maxonMotor->commandBuffer.push(newData);
+                        {
+                            std::lock_guard<std::mutex> lock(maxonMotor->bufferMutex);
+                            maxonMotor->commandBuffer.push(newData);
+                        }
                     }
                     maxonMotor->pre_q = Qt[can_id];
                 }
@@ -702,7 +741,10 @@ void PathManager::pushAddStanceDXL(string flagName)
     }
 
     vector<vector<float>> dxlCommand = {{totalTime/2, totalTime, dxl1}, {totalTime/2, totalTime, dxl2}};
-    dxlCommandBuffer.push(dxlCommand);
+    {
+        std::lock_guard<std::mutex> lock(dxlBufferMutex);
+        dxlCommandBuffer.push(dxlCommand);
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2773,7 +2815,10 @@ void PathManager::pushDxlBuffer(double q0)
     DXLQueue.pop();
 
     vector<vector<float>> dxlCommand = {{0.0, 0.0, dxlQ.dxl1 + (float)q0}, {0.0, 0.0, dxlQ.dxl2}};
-    dxlCommandBuffer.push(dxlCommand);
+    {
+        std::lock_guard<std::mutex> lock(dxlBufferMutex);
+        dxlCommandBuffer.push(dxlCommand);
+    }
 }
 
 void PathManager::pushCommandBuffer(VectorXd &Qi, double kpRatioR, double kpRatioL)
@@ -2823,7 +2868,10 @@ void PathManager::pushCommandBuffer(VectorXd &Qi, double kpRatioR, double kpRati
                 newData.useBrake = 0;
             }
 
-            tMotor->commandBuffer.push(newData);
+            {
+                std::lock_guard<std::mutex> lock(tMotor->bufferMutex);
+                tMotor->commandBuffer.push(newData);
+            }
 
             tMotor->finalMotorPosition = newData.position;
         }
@@ -2861,7 +2909,10 @@ void PathManager::pushCommandBuffer(VectorXd &Qi, double kpRatioR, double kpRati
                     newData.kd = 0;
                 }
                 
-                maxonMotor->commandBuffer.push(newData);
+                {
+                    std::lock_guard<std::mutex> lock(maxonMotor->bufferMutex);
+                    maxonMotor->commandBuffer.push(newData);
+                }
 
                 maxonMotor->finalMotorPosition = newData.position;
             }

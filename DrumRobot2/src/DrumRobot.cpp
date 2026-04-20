@@ -782,12 +782,22 @@ void DrumRobot::sendLoopForThread()
         if (cycleCounter == 0)
         {
             silWriter.setEnabled(canManager.isSilModeEnabled());
-            if (!pathManager.dxlCommandBuffer.empty())
+            
+            vector<vector<float>> dxlCommand;
+            bool hasDxlCommand = false;
             {
-                // 맨 앞 원소 꺼낸 값으로 SyncWrite 실행
-                vector<vector<float>> dxlCommand = pathManager.dxlCommandBuffer.front();
-                pathManager.dxlCommandBuffer.pop();
+                std::lock_guard<std::mutex> lock(pathManager.dxlBufferMutex);
+                if (!pathManager.dxlCommandBuffer.empty())
+                {
+                    // 맨 앞 원소 꺼낸 값으로 SyncWrite 실행
+                    dxlCommand = pathManager.dxlCommandBuffer.front();
+                    pathManager.dxlCommandBuffer.pop();
+                    hasDxlCommand = true;
+                }
+            }
 
+            if (hasDxlCommand)
+            {
                 // 실제로 소비되는 DXL command를 head_pan/head_tilt 값으로 pipe에 내보낸다.
                 if (dxlCommand.size() >= 2)
                 {
@@ -1097,7 +1107,7 @@ string DrumRobot::makeStateJson()
     json_stream << "}, ";
     
     // 6. [추가] 에러 상태일 때만 에러 메시지 포함, 아니면 "None"으로 표시
-    if (state_id == 4) {
+    if (state_id == 6) {
         json_stream << "\"error_message\": \"" << error_msg << "\"";
     } else {
         json_stream << "\"error_message\": \"None\"";
@@ -2217,6 +2227,7 @@ void DrumRobot::runPlayProcess()
         measureMatrix = MatrixXd::Zero(1, 9);
         txtPath = txtBaseFolderPath + nextSongCode;
         pathManager.startOfPlay = true;
+        pathManager.endOfPlayCommand = false; // [수정] Resume 시 초기화 누락 방지
         arduino.setHeadLED(Arduino::PLAYING);
         cout << ">>> [Resume] '" << nextSongCode << "' 파일 인덱스 "
              << play_file_index << " 에서 재개합니다." << endl;
@@ -2329,8 +2340,19 @@ void DrumRobot::runPlayProcess()
             }
             else
             {
+                bool mid_file_pause = false;
                 while(readMeasure(inputFile))    // 한마디 분량 미만으로 남을 때까지 궤적/명령 생성
                 {
+                    checkPlayInterrupts();
+                    if (pause_requested.load())
+                    {
+                        pause_requested = false;
+                        mid_file_pause = true;
+                        cout << ">>> [Play] 일시정지 요청. 즉시 정지합니다." << endl;
+                        pathManager.clearCommandBuffers();
+                        break;
+                    }
+
                     pathManager.processLine(measureMatrix);
 
                     if (state.main == Main::Error) {
@@ -2339,21 +2361,74 @@ void DrumRobot::runPlayProcess()
                     }
                 }
 
-                // send thread에서 읽기 전까지 대기 (첫 파일 한정)
-                if (play_file_index == 0)
+                if (mid_file_pause)
                 {
-                    int sleepCnt = 0;
-                    while (flagObj.getFixationFlag())
+                    inputFile.close();
+                    cout << ">>> [Play] 일시정지. 저장 파일 인덱스: " << play_file_index << endl;
+                    state.main = Main::Pause;
+                    return;
+                }
+
+                // 마지막 파일이면 잔여 명령도 여기서 생성
+                if (endOfScore)
+                {
+                    while (!pathManager.endOfPlayCommand)
                     {
-                        usleep(100);
-                        sleepCnt++;
-                        if(sleepCnt == 50)
+                        checkPlayInterrupts();
+                        if (pause_requested.load())
+                        {
+                            pause_requested = false;
+                            mid_file_pause = true;
+                            cout << ">>> [Play] 일시정지 요청. 즉시 정지합니다." << endl;
+                            pathManager.clearCommandBuffers();
                             break;
+                        }
+
+                        pathManager.processLine(measureMatrix);
+                        if (state.main == Main::Error) {
+                            lastErrorReason = "자세 계산 실패! 역기구학(IK) 계산 결과 팔이 닿지 않거나 꼬이는 궤적입니다.";
+                            return;
+                        }
                     }
                 }
 
+                if (mid_file_pause)
+                {
+                    inputFile.close();
+                    cout << ">>> [Play] 일시정지. 저장 파일 인덱스: " << play_file_index << endl;
+                    state.main = Main::Pause;
+                    return;
+                }
+
                 inputFile.close(); // 파일 닫기
+
+                // 파일 단위 실행 완료 대기 — 버퍼가 소진될 때까지 기다린 뒤 pause 여부 판단
+                bool file_pause = false;
+                while (!flagObj.getFixationFlag() && !allMotorsUnConected)
+                {
+                    checkPlayInterrupts();
+                    if (pause_requested.load())
+                    {
+                        pause_requested = false;
+                        file_pause = true;
+                        cout << ">>> [Play] 일시정지 요청. 즉시 정지합니다." << endl;
+                        pathManager.clearCommandBuffers();
+                        break;
+                    }
+                    usleep(1000);
+                }
+
+                if (file_pause)
+                {
+                    cout << ">>> [Play] 일시정지. 저장 파일 인덱스: " << play_file_index << endl;
+                    state.main = Main::Pause;
+                    return;
+                }
+
                 play_file_index++; // 다음 파일 열 준비
+
+                if (endOfScore)
+                    break; // 마지막 파일 실행 완료 → 정상 종료
             }
         }
         else     //////////////////////////////////////////////////////////// 파일 열기 실패
@@ -2378,16 +2453,6 @@ void DrumRobot::runPlayProcess()
                 inputFile.clear();
                 usleep(100);
             }
-        }
-    }
-
-    // 종료 코드 (endOfScore) 확인됨 : 남은 궤적/명령 만들고 종료
-    while (!pathManager.endOfPlayCommand)      // 명령 전부 생성할 때까지
-    {
-        pathManager.processLine(measureMatrix);
-        if (state.main == Main::Error) {
-            lastErrorReason = "자세 계산 실패! 역기구학(IK) 계산 결과 팔이 닿지 않거나 꼬이는 궤적입니다."; // 궤적 생성 실패
-            return; // 에러가 났으니 더 이상 궤적을 만들지 않고 즉시 종료!
         }
     }
 
@@ -2418,34 +2483,6 @@ void DrumRobot::runPlayProcess()
             filesystem::rename(txtIndexPath.c_str(), saveCode.c_str());
             remove(txtIndexPath.c_str());
         }
-    }
-
-    // ====================================================================
-    // ★ [핵심 추가] 궤적 생성은 끝났지만, 실제 모터 연주가 끝날 때까지 뇌를 대기시킴
-    // ====================================================================
-    cout << ">>> [Agent] 궤적 생성 완료. 모터 연주가 끝날 때까지 대기(Play)합니다..." << endl;
-
-    // 궤적은 다 만들어졌지만, 모터가 실제로 연주를 끝내야 하므로, fixationFlag가 켜질 때까지 대기
-    // pause 명령은 이 루프에서도 체크한다 — 수신 즉시 메시지를 내고 buffer가 소진되면 Pause로 전환
-    bool wait_loop_pause = false;
-    while (!flagObj.getFixationFlag() && !allMotorsUnConected)
-    {
-        checkPlayInterrupts();
-        if (pause_requested.load())
-        {
-            pause_requested = false;
-            wait_loop_pause = true;
-            cout << ">>> [Play] 일시정지 요청 수신. 현재 동작 완료 후 정지합니다." << endl;
-        }
-        usleep(1000);
-    }
-
-    if (wait_loop_pause)
-    {
-        initializePlayState();
-        cout << ">>> [Play] 일시정지 상태로 전환. 재개 시 처음부터 시작됩니다." << endl;
-        state.main = Main::Pause;
-        return;
     }
 
     cout << "Play is Over\n";

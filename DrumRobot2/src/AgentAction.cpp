@@ -125,7 +125,11 @@ void AgentAction::policy_lookAt(float pan, float tilt)
         std::vector<std::vector<float>> dxlCmd;
         dxlCmd.push_back({dt, dt, curPan});
         dxlCmd.push_back({dt, dt, curTilt});
-        pathManager.dxlCommandBuffer.push(dxlCmd);
+        
+        {
+            std::lock_guard<std::mutex> lock(pathManager.dxlBufferMutex);
+            pathManager.dxlCommandBuffer.push(dxlCmd);
+        }
     }
 
     lastPanRad  = targetPan;

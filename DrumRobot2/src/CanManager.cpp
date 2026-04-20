@@ -790,18 +790,26 @@ bool CanManager::setCANFrame(std::map<std::string, bool>& fixFlags, int cycleCou
         {
             if (cycleCounter == 0)
             {
-                if (tMotor->commandBuffer.empty()) continue;
+                TMotorData tData;
+                bool is_fixed = true;
 
-                TMotorData tData = tMotor->commandBuffer.front();
-
-                //버퍼 크기가 1이면 fixed 상태
-                fixFlags[motorName] = (tMotor->commandBuffer.size() == 1);
-
-                if (tMotor->commandBuffer.size() > 1)
                 {
-                    fixFlags[motorName] = false;
-                    tMotor->commandBuffer.pop();
+                    std::lock_guard<std::mutex> lock(tMotor->bufferMutex);
+                    if (tMotor->commandBuffer.empty()) continue;
+
+                    tData = tMotor->commandBuffer.front();
+
+                    //버퍼 크기가 1이면 fixed 상태
+                    is_fixed = (tMotor->commandBuffer.size() == 1);
+
+                    if (tMotor->commandBuffer.size() > 1)
+                    {
+                        is_fixed = false;
+                        tMotor->commandBuffer.pop();
+                    }
                 }
+
+                fixFlags[motorName] = is_fixed;
 
                 if (motorMapping[motorName] == 0)
                 {
@@ -830,18 +838,26 @@ bool CanManager::setCANFrame(std::map<std::string, bool>& fixFlags, int cycleCou
         // MaxonMotor
         else if (std::shared_ptr<MaxonMotor> maxonMotor = std::dynamic_pointer_cast<MaxonMotor>(motor))
         {
-            if (maxonMotor->commandBuffer.empty()) continue;
+            MaxonData mData;
+            bool is_fixed = true;
 
-            MaxonData mData = maxonMotor->commandBuffer.front();
-
-            // 버퍼 크기가 1이면 fixed 상태
-            fixFlags[motorName] = (maxonMotor->commandBuffer.size() == 1);
-
-            if (maxonMotor->commandBuffer.size() > 1)
             {
-                fixFlags[motorName] = false;
-                maxonMotor->commandBuffer.pop();
+                std::lock_guard<std::mutex> lock(maxonMotor->bufferMutex);
+                if (maxonMotor->commandBuffer.empty()) continue;
+
+                mData = maxonMotor->commandBuffer.front();
+
+                // 버퍼 크기가 1이면 fixed 상태
+                is_fixed = (maxonMotor->commandBuffer.size() == 1);
+
+                if (maxonMotor->commandBuffer.size() > 1)
+                {
+                    is_fixed = false;
+                    maxonMotor->commandBuffer.pop();
+                }
             }
+
+            fixFlags[motorName] = is_fixed;
 
             // 1차 command-level SIL exporter 삽입 지점:
             // commandBuffer에서 실제로 소비되는 MaxonData를 FIFO/pipe로 내보낸다.

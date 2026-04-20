@@ -260,7 +260,10 @@ void TestManager::SendTestProcess()
                                 TMotorData newData;
                                 newData.position = tMotor->jointAngleToMotorPosition(Qi[canManager.motorMapping[entry.first]]);
                                 newData.mode = tMotor->Position;
-                                tMotor->commandBuffer.push(newData);
+                                {
+                                    std::lock_guard<std::mutex> lock(tMotor->bufferMutex);
+                                    tMotor->commandBuffer.push(newData);
+                                }
                                 
                                 tMotor->finalMotorPosition = newData.position;
                             }
@@ -269,7 +272,10 @@ void TestManager::SendTestProcess()
                                 MaxonData newData;
                                 newData.position = maxonMotor->jointAngleToMotorPosition(Qi[canManager.motorMapping[entry.first]]);
                                 newData.mode = maxonMotor->CSP;
-                                maxonMotor->commandBuffer.push(newData);
+                                {
+                                    std::lock_guard<std::mutex> lock(maxonMotor->bufferMutex);
+                                    maxonMotor->commandBuffer.push(newData);
+                                }
 
                                 maxonMotor->finalMotorPosition = newData.position;
                             }
@@ -342,7 +348,10 @@ void TestManager::SendTestProcess()
                             
                             newData.position = tMotor->jointAngleToMotorPosition(Q);
                             newData.mode = tMotor->Position; 
-                            tMotor->commandBuffer.push(newData);
+                            {
+                                std::lock_guard<std::mutex> lock(tMotor->bufferMutex);
+                                tMotor->commandBuffer.push(newData);
+                            }
                             tMotor->finalMotorPosition = newData.position;
                         }
                     }
@@ -694,7 +703,10 @@ void TestManager::getArr(float arr[])
                     TMotorData newData;
                     newData.position = tMotor->jointAngleToMotorPosition(Qi[canManager.motorMapping[entry.first]]);
                     newData.mode = tMotor->Position;
-                    tMotor->commandBuffer.push(newData);
+                    {
+                        std::lock_guard<std::mutex> lock(tMotor->bufferMutex);
+                        tMotor->commandBuffer.push(newData);
+                    }
                     
                     tMotor->finalMotorPosition = newData.position;
                 }
@@ -703,7 +715,10 @@ void TestManager::getArr(float arr[])
                     MaxonData newData;
                     newData.position = maxonMotor->jointAngleToMotorPosition(Qi[canManager.motorMapping[entry.first]]);
                     newData.mode = maxonMotor->CSP;
-                    maxonMotor->commandBuffer.push(newData);
+                    {
+                        std::lock_guard<std::mutex> lock(maxonMotor->bufferMutex);
+                        maxonMotor->commandBuffer.push(newData);
+                    }
 
                     maxonMotor->finalMotorPosition = newData.position;
                 }
@@ -1067,7 +1082,10 @@ void TestManager::pushVelCmd(float arr[])
                     newData.position = tMotor->jointAngleToMotorPosition(Qi[canManager.motorMapping[entry.first]]);
                     newData.mode = tMotor->Velocity;
                     newData.velocityERPM = Vi[canManager.motorMapping[entry.first]] * 60.0 * 21.0 * 10 / 2.0 / M_PI;
-                    tMotor->commandBuffer.push(newData);
+                    {
+                        std::lock_guard<std::mutex> lock(tMotor->bufferMutex);
+                        tMotor->commandBuffer.push(newData);
+                    }
                     
                     tMotor->finalMotorPosition = newData.position;
                 }
@@ -1076,7 +1094,10 @@ void TestManager::pushVelCmd(float arr[])
                     MaxonData newData;
                     newData.position = maxonMotor->jointAngleToMotorPosition(Qi[canManager.motorMapping[entry.first]]);
                     newData.mode = maxonMotor->CSP;
-                    maxonMotor->commandBuffer.push(newData);
+                    {
+                        std::lock_guard<std::mutex> lock(maxonMotor->bufferMutex);
+                        maxonMotor->commandBuffer.push(newData);
+                    }
 
                     maxonMotor->finalMotorPosition = newData.position;
                 }

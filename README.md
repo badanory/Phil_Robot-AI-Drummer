@@ -41,6 +41,8 @@ robot_project/
 
 - `phil_brain.py`: 마이크 녹음, Whisper STT, 상태 스냅샷 조회, LLM 턴 실행, 검증된 명령 전송, TTS 재생을 묶는 메인 엔트리포인트입니다.
 - `pipeline/`: classifier, planner, validator, skill expansion, motion resolver 같은 판단 계층입니다.
+  - **LangGraph 기반 상태 기계(State Machine)**: `process → execute → return_home` 구조로 설계되어 비동기 실행 및 동작 간 전이를 유연하게 관리합니다.
+  - **InterruptibleExecutor**: 백그라운드 스레드에서 로봇 명령을 실행하며, Enter 키 입력 시 이전 동작을 즉각 중단하고 새 명령을 처리합니다.
 - `runtime/`: TCP client와 MeloTTS 같은 런타임 계층입니다.
 - `eval/`: smoke case와 오프라인 평가 러너가 있습니다.
 - `init_phil.sh`: `jetson_clocks`와 Ollama keep-alive를 이용해 Jetson 런타임을 예열합니다.
@@ -148,6 +150,13 @@ python phil_brain.py
 - Python brain 구조 문서: `phil_robot/docs/PROJECT_STRUCTURE_KR.md`
 - LLM 파이프라인 문서: `phil_robot/docs/LLM_PIPELINE_ARCHITECTURE_KR.md`
 - SIL 상세 문서: `Drum_intheloop/README.md`
+
+## 재생 제어 및 안전 메커니즘 (Pause/Resume/Stop)
+
+현재 로봇의 모터 제어 및 악보 재생은 전역 궤적 버퍼링(Global Trajectory Buffering)을 배제하고 **점진적 파일 기반 실행(Incremental File-Based Execution)** 모델을 사용합니다.
+
+- 긴급 정지 및 일시정지(`s` 명령): 명령 수신 시 `std::mutex`로 보호되는 각 모터의 pending 버퍼(`PathManager`)와 `TestManager` 큐를 즉각 플러시하여 로봇이 추가 동작 없이 즉시 멈춥니다.
+- 재생 재개(`p` 명령): 정지된 위치를 내부적으로 추적하여, 재시작 시 음악의 처음이 아닌 중단된 마디/위치부터 이어서(Resume) 재생합니다.
 
 ## 현재 문서화해 둘 제한 사항
 

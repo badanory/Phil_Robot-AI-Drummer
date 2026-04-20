@@ -251,6 +251,9 @@
 
 ## Parking Lot
 
+- [ ] `DrumRobot2 박자 단위 pause/resume` (파일 단위 재개의 다음 단계)
+  - 현재: 파일 처음부터 재연주. 더 정밀한 재개를 원하면 버퍼에 파일 경계 마커를 심어야 함
+  - 방향: `TMotorData`에 마커 필드 추가 → send 스레드가 마커 소비 시 임시 파일에 위치 기록 → pause 시 읽기
 - [ ] `failure taxonomy` 정의
   - 메모:
     - 지금은 `raw_op_cmds / resolved_op_cmds / valid_op_cmds`만으로도 1차 원인 분리가 가능하다.
@@ -269,6 +272,10 @@
 
 ## Done
 
+- [x] `DrumRobot2 파일 단위 pause/resume` 구현
+  - `runPlayProcess()` 파일별 처리 블록 안에 실행 완료 대기 루프 추가
+  - pause 시 `play_file_index`가 현재 파일을 가리킴 → resume 시 해당 파일 처음부터 재연주
+  - 박자 단위 재개는 Parking Lot 참조
 - [x] `gesture / play abstraction uplift`
   - 목표: 긴 `op_cmd` 시퀀스를 위 계층 skill/gesture로 끌어올리고, `AgentAction`은 저수준 실행 primitive로 고정한다.
   - 1차 범위:

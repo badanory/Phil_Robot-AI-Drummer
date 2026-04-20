@@ -560,7 +560,36 @@ Responsibilities:
 - transmit robot commands over the socket client
 - handle `wait:<seconds>` in Python as a temporary delay primitive
 
-### 11. Runtime Transport and Feedback Layer
+### 11. LangGraph State Machine Layer
+
+Files:
+
+- [robot_graph.py](/home/shy/robot_project/phil_robot/pipeline/robot_graph.py)
+- [state_graph.py](/home/shy/robot_project/phil_robot/pipeline/state_graph.py)
+- [exec_thread.py](/home/shy/robot_project/phil_robot/pipeline/exec_thread.py)
+
+Responsibilities:
+
+- Compose the `process → execute → return_home` node graph
+- `InterruptibleExecutor`: Executes robot commands in a background thread, sends `s` (stop) and aborts `wait` upon `cancel()` (synchronized with the C++ incremental execution and buffer flushing)
+- Determines whether to return home based on `plan_type` (motion/play/stop/chat)
+- Handles Enter key input to instantly interrupt previous actions and process new commands (supports Pause/Resume)
+- Synchronizes TTS and robot commands (gesture while speaking)
+
+### 12. Session Layer
+
+Files:
+
+- [session.py](/home/shy/robot_project/phil_robot/pipeline/session.py)
+
+Responsibilities:
+
+- `SessionContext`: Short-term memory of conversation history, last joint/look/play state
+- Manages pending clarification state (`pending_clarification_q`)
+- `resolve_clarification_text()`: Merges previous utterance with the current answer
+- `build_session_summary()`: Generates a session summary to include in the planner input
+
+### 13. Runtime Transport and Feedback Layer
 
 Files:
 
