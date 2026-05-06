@@ -326,7 +326,30 @@ C++ 쪽에서 joint state가 올바르게 반영되면 HOME 복귀 명령이 반
 
 ---
 
+## Frame-Accurate SIL (가상 Serial & VCAN 송신) 설계 방향
+
+현재 파이프(pipe) 기반의 명령어 수준(Command-level) SIL을 완벽한 **프레임 수준(Frame-accurate)** SIL로 고도화하기 위한 아키텍처 방향이다.
+정지 보간(감속 제어)과 같은 저수준(Low-level) 하드웨어 제어 결과를 시뮬레이터에 그대로 반영하기 위함이다.
+
+### 1. 다이나믹셀(Neck) 가상 시리얼 SIL (우선 진행)
+* **목표**: `socat`을 이용해 가상 시리얼 포트(PTY)를 열고, Python 시뮬레이터가 다이나믹셀 모터(Slave) 역할을 수행한다.
+* **C++ 제어기**: `DRUM_SIL_MODE=1`일 때 `/dev/ttyUSB0` 대신 가상 포트(예: `/dev/pts/1`) 연결.
+* **Python 시뮬레이터**: 
+  - `pyserial`로 반대쪽 가상 포트(예: `/dev/pts/2`)를 열어 Raw 바이트 읽기.
+  - Protocol 2.0 헤더(`0xFF 0xFF 0xFD 0x00`)를 찾아 디코딩하여 목표 각도 추출 후 PyBullet 적용.
+  - **주의(SyncRead 대응)**: C++이 `GroupSyncRead`를 호출할 경우 모터가 응답할 때까지 블로킹되므로, 시뮬레이터가 모터인 척 Status Packet 양식을 조립하여 응답(ACK)해야 Timeout 에러를 방지할 수 있다.
+
+### 2. TMotor / Maxon 제어 명령 VCAN 송신 전환
+* **목표**: `SilCommandPipeWriter`를 통한 파이프라인 송신을 폐기하고, `CanManager`가 처리한 최종 `can_frame`을 `vcan0`로 직접 쏜다.
+* **Python 시뮬레이터**: `vcan0`에서 패킷을 수신하고, 각 모터 데이터시트에 맞춰 비트 마스킹/시프팅 파서(Parser)를 직접 작성하여 목표 제어값을 PyBullet에 적용한다.
+
+---
+
 ## Now
+
+- [ ] **[WIP] 다이나믹셀(Neck) 가상 시리얼(Virtual Serial) SIL 구축** (최우선 작업)
+  - 목표: `socat` PTY 페어를 생성하고 Python이 슬레이브 모터 역할을 하여 완벽한 프레임 수준 통신 동기화를 이룬다.
+  - 메모: 진행 간 SyncRead 응답(ACK) 처리에 특히 주의한다. 세부 사항은 'Frame-Accurate SIL 설계 방향' 참고.
 
 - [x] `READY -> snare` 자세 mismatch를 층별로 분리
   - 목표: READY/시작 자세가 스네어 방향으로 모이지 않는 원인이 startup preset인지,

@@ -222,32 +222,21 @@ def main() -> int:
         # 실제 관절 명령이 없는 빈 tick이 IDLE_RETURN_SEC 초 이상 이어지면
         # startup pose로 복귀한다. SIL 전용 임시 기능.
         frame_targets: Dict[str, float] = {}
-        last_motion_time: float = time.time()
-        idle_returned: bool = False  # 복귀 후 중복 적용 방지
 
         for message in reader.read_messages():
             if message["kind"] == "tick":
                 if frame_targets:
                     backend.apply_targets(frame_targets)
-                    backend.step()
-                    # ★ close-loop: PyBullet 현재 state → vcan0 피드백
-                    if vcan_writer is not None:
-                        vcan_writer.send_all(backend.read_joint_states())
                     frame_targets.clear()
-                    last_motion_time = time.time()
-                    idle_returned = False
-                    if args.sleep > 0.0:
-                        time.sleep(args.sleep)
-                else:
-                    # 빈 tick: 명령 없는 구간 → idle 판정
-                    if not idle_returned and (time.time() - last_motion_time) > IDLE_RETURN_SEC:
-                        print("[SIL] Idle timeout: returning to startup pose")
-                        backend.apply_targets(startup_joint_targets_deg)
-                        backend.step()
-                        # idle 복귀 pose도 피드백 전송
-                        if vcan_writer is not None:
-                            vcan_writer.send_all(backend.read_joint_states())
-                        idle_returned = True
+
+                # 빈 tick이든 아니든 step() 과 vcan_writer.send_all() 은 항상 호출한다.
+                # 그래야 시뮬레이터 시간이 흐르고, vcan 피드백도 1ms 주기로 일정하게 돌아간다.
+                backend.step()
+                if vcan_writer is not None:
+                    vcan_writer.send_all(backend.read_joint_states())
+
+                if args.sleep > 0.0:
+                    time.sleep(args.sleep)
             else:
                 joint_targets_deg = build_joint_targets(applier, message)
                 frame_targets.update(joint_targets_deg)
