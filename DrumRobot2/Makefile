@@ -71,3 +71,14 @@ $(OBJDIR)/aruco/%.o: $(ARUCO_SRCDIR)/%.cpp
 
 clean:
 	rm -rf $(OBJDIR) $(BINDIR)/$(EXECUTABLE)
+
+.PHONY: debug
+debug: CFLAGS := -Wall -g3 -O0 -fno-omit-frame-pointer -std=c++17 -fPIC \
+                 $(shell pkg-config --cflags opencv4)
+debug: all
+
+.PHONY: asan
+asan: CFLAGS  := -Wall -g3 -O0 -fno-omit-frame-pointer -fsanitize=address \
+                 -std=c++17 -fPIC $(shell pkg-config --cflags opencv4)
+asan: LDFLAGS := $(LDFLAGS) -fsanitize=address
+asan: all

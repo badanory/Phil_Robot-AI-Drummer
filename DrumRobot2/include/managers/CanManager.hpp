@@ -96,7 +96,8 @@ public:
     int errorCnt = 0;   // 수신 에러 카운트
 
     bool sendMotorFrame(const std::shared_ptr<GenericMotor> &motor);
-    bool setCANFrame(std::map<std::string, bool>& fixFlags, int cycleCounter);
+    bool setCANFrame(std::map<std::string, bool>& fixFlags, int cycleCounter,
+                     bool &out_measure_ended, bool &out_song_ended);
     bool isSilModeEnabled() const { return silModeEnabled; }
 
     // SIL 모드에서 vcan0 소켓을 열고 disconnected 모터에 할당한다.

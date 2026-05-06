@@ -636,7 +636,16 @@ void CanManager::setMaxonCANFrame(std::shared_ptr<MaxonMotor> &maxonMotor, const
 
 float CanManager::calTorque(std::shared_ptr<MaxonMotor> &maxonMotor, const MaxonData &mData)
 {
-        double err = mData.position - maxonMotor->motorPosition;
+        // maxonMotor 상태 스냅샷 (recvThread 충돌 방지)
+        float snap_pos;
+        float snap_jangle;
+        {
+            std::lock_guard<std::mutex> slock(maxonMotor->stateMutex);
+            snap_pos    = maxonMotor->motorPosition;
+            snap_jangle = maxonMotor->jointAngle;
+        }
+
+        double err = mData.position - snap_pos;
         double err_dot = (err - maxonMotor-> pre_err)/DTSECOND;
         double alpha = 0.2;  // 적절한 필터 계수
 
@@ -654,7 +663,6 @@ float CanManager::calTorque(std::shared_ptr<MaxonMotor> &maxonMotor, const Maxon
         for (auto &motor_pair : motors)
         {
             std::shared_ptr<GenericMotor> motor = motor_pair.second;
-            std::string motorName = motor_pair.first;
             
             // TMotor
             if (std::shared_ptr<TMotor> tMotor = std::dynamic_pointer_cast<TMotor>(motor))
@@ -663,6 +671,7 @@ float CanManager::calTorque(std::shared_ptr<MaxonMotor> &maxonMotor, const Maxon
                 {
                     if(tMotor -> myName == "R_arm2" || tMotor -> myName == "R_arm3" )
                     {
+                        std::lock_guard<std::mutex> slock(tMotor->stateMutex);
                         gravity_angle += tMotor -> jointAngle;
                     }
                 }
@@ -670,13 +679,14 @@ float CanManager::calTorque(std::shared_ptr<MaxonMotor> &maxonMotor, const Maxon
                 {
                     if(tMotor -> myName == "L_arm2" || tMotor -> myName == "L_arm3" )
                     {
+                        std::lock_guard<std::mutex> slock(tMotor->stateMutex);
                         gravity_angle += tMotor -> jointAngle;
                     }
                 }
             }
         }
         
-        gravity_angle += maxonMotor -> jointAngle;
+        gravity_angle += snap_jangle;
 
         float gravityTorqueNm =  stickMassKg * 9.81 * stickLengthMeter * std::sin(gravity_angle) / gearRatio;
 
@@ -775,10 +785,14 @@ bool CanManager::safetyCheckSendT(std::shared_ptr<TMotor> &tMotor, TMotorData &t
     return isSafe;
 }
 
-bool CanManager::setCANFrame(std::map<std::string, bool>& fixFlags, int cycleCounter)
+bool CanManager::setCANFrame(std::map<std::string, bool>& fixFlags, int cycleCounter,
+                              bool &out_measure_ended, bool &out_song_ended)
 {
     static SilCommandPipeWriter silWriter;
     silWriter.setEnabled(silModeEnabled);
+
+    bool any_measure_ended = false;
+    bool any_song_ended = false;
 
     for (auto &motor_pair : motors)
     {
@@ -809,9 +823,15 @@ bool CanManager::setCANFrame(std::map<std::string, bool>& fixFlags, int cycleCou
                     }
                 }
 
+                // 한 마디 소진 완료 확인
+                if (tData.is_measure_end) any_measure_ended = true;
+                // 연주 완전 종료 확인
+                if (tData.is_last_measure) any_song_ended = true;
+
                 fixFlags[motorName] = is_fixed;
 
                 if (motorMapping[motorName] == 0)
+// ... (기존 usbio 로직 동일) ...
                 {
                     //useBrake가 1이면 브레이크 켜줌 0이면 꺼줌
                     usbio.setUSBIO4761(0, tData.useBrake == 1); //세팅
@@ -826,7 +846,6 @@ bool CanManager::setCANFrame(std::map<std::string, bool>& fixFlags, int cycleCou
                 }
 
                 // 1차 command-level SIL exporter 삽입 지점:
-                // commandBuffer에서 실제로 소비되는 TMotorData를 FIFO/pipe로 내보낸다.
                 silWriter.writeTMotor(motorName, *tMotor, tData);
 
                 if (!useSilBypass)
@@ -857,10 +876,12 @@ bool CanManager::setCANFrame(std::map<std::string, bool>& fixFlags, int cycleCou
                 }
             }
 
+            // 한 마디 소진 완료 확인 (Maxon은 5번에 1번만 체크하면 됨)
+            if (mData.is_measure_end) any_measure_ended = true;
+            if (mData.is_last_measure) any_song_ended = true;
+
             fixFlags[motorName] = is_fixed;
 
-            // 1차 command-level SIL exporter 삽입 지점:
-            // commandBuffer에서 실제로 소비되는 MaxonData를 FIFO/pipe로 내보낸다.
             silWriter.writeMaxon(motorName, *maxonMotor, mData);
 
             const bool useSilBypass = silModeEnabled && !maxonMotor->isConected;
@@ -870,6 +891,10 @@ bool CanManager::setCANFrame(std::map<std::string, bool>& fixFlags, int cycleCou
             }
         }
     }
+
+    out_measure_ended = any_measure_ended;
+    out_song_ended    = any_song_ended;
+
     return true;
 }
 
@@ -1082,11 +1107,13 @@ bool CanManager::distributeFramesToMotors(bool setlimit)
                 {
                     std::tuple<int, float, float, float, int8_t, int8_t> parsedData = tservocmd.motor_receive(&frame);
                     
-                    tMotor->motorPosition = std::get<1>(parsedData);
-                    tMotor->motorVelocity = std::get<2>(parsedData);
-                    tMotor->motorCurrent = std::get<3>(parsedData);
-
-                    tMotor->jointAngle = tMotor->motorPositionToJointAngle(std::get<1>(parsedData));
+                    {
+                        std::lock_guard<std::mutex> slock(tMotor->stateMutex);
+                        tMotor->motorPosition = std::get<1>(parsedData);
+                        tMotor->motorVelocity = std::get<2>(parsedData);
+                        tMotor->motorCurrent = std::get<3>(parsedData);
+                        tMotor->jointAngle = tMotor->motorPositionToJointAngle(std::get<1>(parsedData));
+                    }
                     
                     // std::cout << tMotor->jointAngle << std::endl;
                     tMotor->recieveBuffer.push(frame);
@@ -1128,17 +1155,20 @@ bool CanManager::distributeFramesToMotors(bool setlimit)
                     // getCheck(*maxonMotor ,&frame);
                     std::tuple<int, float, float, unsigned char> parsedData = maxoncmd.parseRecieveCommand(*maxonMotor, &frame);
                     
-                    maxonMotor->motorPosition = std::get<1>(parsedData);
-                    maxonMotor->motorTorque = std::get<2>(parsedData);
-                    maxonMotor->statusBit = std::get<3>(parsedData);
-                    // 타격 감지를 위한 코드
-                    // maxonMotor->positionValues.push(std::get<1>(parsedData));
-                    // if ((maxonMotor->positionValues).size() >= maxonMotor->maxIndex)
-                    // {
-                    //     maxonMotor->positionValues.pop();
-                    // }
-                    
-                    maxonMotor->jointAngle = maxonMotor->motorPositionToJointAngle(std::get<1>(parsedData));
+                    {
+                        std::lock_guard<std::mutex> slock(maxonMotor->stateMutex);
+                        maxonMotor->motorPosition = std::get<1>(parsedData);
+                        maxonMotor->motorTorque = std::get<2>(parsedData);
+                        maxonMotor->statusBit = std::get<3>(parsedData);
+                        // 타격 감지를 위한 코드
+                        // maxonMotor->positionValues.push(std::get<1>(parsedData));
+                        // if ((maxonMotor->positionValues).size() >= maxonMotor->maxIndex)
+                        // {
+                        //     maxonMotor->positionValues.pop();
+                        // }
+                        
+                        maxonMotor->jointAngle = maxonMotor->motorPositionToJointAngle(std::get<1>(parsedData));
+                    }
                     maxonMotor->recieveBuffer.push(frame);
 
                     // func.appendToCSV(func.log_file_name, false, (float)maxonMotor->nodeId, maxonMotor->motorPosition, maxonMotor->motorTorque);
@@ -1155,7 +1185,7 @@ bool CanManager::distributeFramesToMotors(bool setlimit)
             }
         }
     }
-    tempFrames.clear(); // 프레임 분배 후 임시 배열 비우기
+   tempFrames.clear();
 
     return true;
 }

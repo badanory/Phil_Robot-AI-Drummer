@@ -78,6 +78,18 @@ public:
     void processLine(MatrixXd &measureMatrix);
     void clearCommandBuffers();
 
+    // [★ 추가] 자연스러운 종료(Graceful Stop)를 위한 동기화 객체
+    std::mutex measure_mutex;
+    std::condition_variable cv_full;
+    std::condition_variable cv_empty;
+    const int MAX_MEASURE_BUFFER = 2;
+    int measure_count = 0;
+    bool is_graceful_stopping = false;
+
+    // velocity modifier — stop과 동일한 IK 경계에서 커밋되어 latency를 맞춤
+    double pending_vel_scale = 1.0;
+    double active_vel_scale  = 1.0;
+
     // DXL
     std::queue<vector<vector<float>>> dxlCommandBuffer;
     std::mutex dxlBufferMutex; // [★ 추가] DXL 모터 전용 자물쇠
@@ -342,7 +354,7 @@ private:
     double getWaistAngle(MatrixXd &waistCoefficient, int index);
     VectorXd getJointAngles(double q0, double &KpRatioR, double &KpRatioL);
     void pushDxlBuffer(double q0);
-    void pushCommandBuffer(VectorXd &Qi, double KpRatioR, double KpRatioL);
+    void pushCommandBuffer(VectorXd &Qi, double KpRatioR, double KpRatioL, bool is_measure_end, bool is_last_measure = false);
     float getVelocityRadps(bool restart, double q, int can_id);
 
     //////////////////////////////////// Detect Collision

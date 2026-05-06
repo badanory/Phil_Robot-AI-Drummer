@@ -68,6 +68,8 @@ def build_motion_block_message(robot_state) -> str:
     if current_state == 2:
         return "지금은 연주 중이라 다른 동작을 할 수 없습니다."
     if current_state == 4:
+        return "지금은 일시정지 상태라 다른 동작을 할 수 없습니다. '다시 시작'이라고 말씀하시면 연주를 재개합니다."
+    if current_state == 6:
         error_detail = robot_state.get("error_detail", "원인을 아직 확인 중입니다.")
         return f"지금은 에러 상태라 동작할 수 없습니다. 원인은 {error_detail} 입니다."
 

@@ -34,10 +34,11 @@ public:
     float rMin, rMax;
     std::string myName;
 
-    // Receive
+    // Receive (stateMutex로 보호: recvThread 쓰기 / sendThread 읽기)
     float motorPosition, motorVelocity;
     float jointAngle;
     float initialJointAngle;
+    std::mutex stateMutex;
 
     // parseSendCommand() -> 현재 사용 안함
     float desPos, desVel, desTor;
@@ -70,6 +71,8 @@ struct TMotorData
     float velocityERPM = 0.0;
     int mode;
     int useBrake;
+    bool is_measure_end = false;  // [★ 추가] 한 마디의 끝 표시
+    bool is_last_measure = false; // [★ 추가] 전체 연주의 진짜 마지막 표시
 };
 
 class TMotor : public GenericMotor
@@ -125,6 +128,8 @@ struct MaxonData
     int mode;
     int kp;
     int kd;
+    bool is_measure_end = false;  // [★ 추가] 한 마디의 끝 표시
+    bool is_last_measure = false; // [★ 추가] 자연스러운 종료를 위한 마지막 데이터 꼬리표
 };
 
 class MaxonMotor : public GenericMotor

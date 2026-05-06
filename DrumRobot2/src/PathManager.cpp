@@ -775,10 +775,10 @@ void PathManager::genTrajectory(MatrixXd &measureMatrix)
 {
     int n = getNumCommands(measureMatrix);      // 명령 개수
     
-    genTaskSpaceTrajectory(measureMatrix, n);   // task space 궤적 생성
-    genHitTrajectory(measureMatrix, n);         // 타격 궤적 생성
-    genPedalTrajectory(measureMatrix, n);       // 발모터 궤적 생성
-    genDxlTrajectory(measureMatrix, n);         // DXL모터 궤적 생성
+    genTaskSpaceTrajectory(measureMatrix, n);   // task space 궤적 생성, taskSpaceQueue에 저장
+    genHitTrajectory(measureMatrix, n);         // 타격 궤적 생성, HitQueue에 저장
+    genPedalTrajectory(measureMatrix, n);       // 발모터 궤적 생성, pedalQueue에 저장
+    genDxlTrajectory(measureMatrix, n);         // DXL모터 궤적 생성, DXLQueue에 저장
 
     ///////////////////////////////////////////////////////////// 읽은 줄 삭제
     MatrixXd tmpMatrix(measureMatrix.rows() - 1, measureMatrix.cols());
@@ -802,6 +802,17 @@ void PathManager::solveIKandPushCommand()
         usleep(500);
     }
 
+    // [★ 동기화] 큐가 꽉 찼으면 비워질 때까지 대기 ('lock을 올려')
+    std::unique_lock<std::mutex> lock(measure_mutex);
+    cv_full.wait(lock, [this] {
+        return measure_count < MAX_MEASURE_BUFFER;
+    });
+
+    // stop과 동일한 IK 경계에서 velocity modifier를 커밋 → latency 정렬
+    active_vel_scale = pending_vel_scale;
+
+    bool is_last = is_graceful_stopping;
+
     for (int i = 0; i < n; i++)
     {
         double q0 = getWaistAngle(waistCoefficient, i); // 허리 관절각
@@ -811,26 +822,23 @@ void PathManager::solveIKandPushCommand()
 
         double KpRatioR, KpRatioL;
         VectorXd q = getJointAngles(q0, KpRatioR, KpRatioL);                // 로봇 관절각
-        
-        // // 데이터 기록
-        // for (int i = 0; i < 9; i++)
-        // {
-        //     std::string fileName = "solveIK_q" + to_string(i);
-        //     func.appendToCSV(fileName, false, i, q(i));
-        // }
 
-        // //* 테스트용 *// 모터 연결하면 지워야 함 (이인우)
-        // for (int i = 0; i < 7; i++)
-        // {
-        //     std::string fileName = "solveIK_v" + to_string(i);
-        //     func.appendToCSV(fileName, false, i, getVelocityRadps(false, q[i], i));
-        // }
+        // velocity modifier: kpRatio 스케일링 (궤적 형태 불변, 타격력만 조정)
+        KpRatioR *= active_vel_scale;
+        KpRatioL *= active_vel_scale;
 
-        pushCommandBuffer(q, KpRatioR, KpRatioL);                           // 명령 생성 후 push
+        // 정지 명령 확인 및 마지막 데이터 점 표시 ('modifier에서 집어 넣어')
+        bool is_measure_end = (i == n - 1);
+        bool send_last_flag = (is_last && is_measure_end);
+        pushCommandBuffer(q, KpRatioR, KpRatioL, is_measure_end, send_last_flag);
         pushDxlBuffer(q0);
     }
 
-    if (waistParameterQueue.empty())    // DrumRobot 에게 끝났음 알리기
+    measure_count++;
+    lock.unlock();
+    cv_empty.notify_one(); // 소비자(SEND 스레드)에게 데이터 들어왔다고 알림 ('진행시켜')
+
+    if (waistParameterQueue.empty() || is_last)    // DrumRobot 에게 끝났음 알리기
     {
         endOfPlayCommand = true;    // 모든 명령 생성 완료
     }
@@ -868,7 +876,7 @@ void PathManager::genTaskSpaceTrajectory(MatrixXd &measureMatrix, int n)
 
     // 출발 시간/위치, 도착 시간/위치
     TrajectoryData data = getTrajectoryData(measureMatrix, measureStateR, measureStateL);
-    // state update
+    // 다음 호출 시 사용할 state update
     measureStateR = data.nextStateR;
     measureStateL = data.nextStateL;
 
@@ -893,15 +901,6 @@ void PathManager::genTaskSpaceTrajectory(MatrixXd &measureMatrix, int n)
         TT.wristAngleL = sL*(data.finalWristAngleL - data.initialWristAngleL) + data.initialWristAngleL;
 
         taskSpaceQueue.push(TT);
-
-        // // 데이터 저장
-        // std::string fileName;
-        // fileName = "Trajectory_R";
-        // func.appendToCSV(fileName, false, TT.trajectoryR[0], TT.trajectoryR[1], TT.trajectoryR[2]);
-        // fileName = "Trajectory_L";
-        // func.appendToCSV(fileName, false, TT.trajectoryL[0], TT.trajectoryL[1], TT.trajectoryL[2]);
-        // fileName = "S";
-        // func.appendToCSV(fileName, false, sR, sL);
 
         if (i == 0)
         {
@@ -1355,13 +1354,6 @@ void PathManager::genHitTrajectory(MatrixXd &measureMatrix, int n)
         HT.kpRatioL = getKpRatio(tHitL, wristTimeL);
 
         hitQueue.push(HT);
-
-        // // 데이터 저장
-        // std::string fileName;
-        // fileName = "hit_angle";
-        // func.appendToCSV(fileName, false, HT.elbowR, HT.elbowL, HT.wristR, HT.wristL);
-        // fileName = "hit_time";
-        // func.appendToCSV(fileName, false, tHitR, tHitL);
     }
 }
 
@@ -2821,7 +2813,7 @@ void PathManager::pushDxlBuffer(double q0)
     }
 }
 
-void PathManager::pushCommandBuffer(VectorXd &Qi, double kpRatioR, double kpRatioL)
+void PathManager::pushCommandBuffer(VectorXd &Qi, double kpRatioR, double kpRatioL, bool is_measure_end, bool is_last_measure)
 {
     for (auto &entry : motors)
     {
@@ -2832,42 +2824,20 @@ void PathManager::pushCommandBuffer(VectorXd &Qi, double kpRatioR, double kpRati
             TMotorData newData;
             newData.position = tMotor->jointAngleToMotorPosition(Qi[can_id]);
 
+            newData.is_measure_end = is_measure_end;
+            newData.is_last_measure = is_last_measure;
+
             if (tmotorMode == "position")
             {
                 newData.mode = tMotor->Position;
                 newData.velocityERPM = 0.0;
             }
-            // else if (tmotorMode == "velocityFF")
-            // {
-            //     newData.mode = tMotor->VelocityFF;
-            //     newData.velocityERPM = tMotor->cwDir * getVelocityRadps(false, Qi[can_id], can_id) * tMotor->pole * tMotor->gearRatio * 60.0 / 2.0 / M_PI;
-            // }
-            // else if (tmotorMode == "velocityFB")
-            // {
-            //     newData.mode = tMotor->VelocityFB;
-            //     newData.velocityERPM = 0.0;
-            // }
             else if (tmotorMode == "velocity")
             {
                 newData.mode = tMotor->Velocity;
                 newData.velocityERPM = tMotor->cwDir * getVelocityRadps(false, Qi[can_id], can_id) * tMotor->pole * tMotor->gearRatio * 60.0 / 2.0 / M_PI;
             }
-
-            if (can_id == 0)
-            {
-                float alpha = 0.7;
-                float diff = alpha*preDiff + (1 - alpha)*std::abs(newData.position - prevWaistPos);
-                prevWaistPos = newData.position;
-                newData.useBrake = (diff < 0.01 * M_PI / 180.0) ? 1 : 0;
-                preDiff = diff;
-
-                // func.appendToCSV("brake input", false, newData.position, newData.useBrake, diff);
-            }
-            else
-            {
-                newData.useBrake = 0;
-            }
-
+            newData.useBrake = 0;
             {
                 std::lock_guard<std::mutex> lock(tMotor->bufferMutex);
                 tMotor->commandBuffer.push(newData);
@@ -2883,32 +2853,33 @@ void PathManager::pushCommandBuffer(VectorXd &Qi, double kpRatioR, double kpRati
                 MaxonData newData;
                 float Qi1ms = ((i+1)*Qi[can_id] + (4-i)*maxonMotor->pre_q)/5.0;
                 newData.position = maxonMotor->jointAngleToMotorPosition(Qi1ms);
+                
+                // 마디의 마지막 점(i==4)에 플래그 설정
+                newData.is_measure_end = (i == 4); 
+                newData.is_last_measure = (is_last_measure && (i == 4)); 
+
                 if (can_id == 10 || can_id == 11)
                 {
-                    // 발 모터는 항상 CSP mode
                     newData.mode = maxonMotor->CSP;
-                    newData.kp = 0;
-                    newData.kd = 0;
-                }
-                else if (maxonMode == "CST")
-                {
-                    newData.mode = maxonMotor->CST;
-                    newData.kp = Kp * (can_id==7?kpRatioR:kpRatioL);
-                    newData.kd = Kd;
-                    if(kpRatioR != 1.0 || kpRatioL != 1.0)
-                    {
-                        newData.kd = KdDrop;
-                        newData.kp = kpMax * (can_id==7?kpRatioR:kpRatioL);
-                    }
-
+                    newData.kp = 0.0;
+                    newData.kd = 0.0;
                 }
                 else
                 {
-                    newData.mode = maxonMotor->CSP;
-                    newData.kp = 0;
-                    newData.kd = 0;
+                    if (maxonMode == "CST")
+                    {
+                        newData.mode = maxonMotor->CST;
+                        newData.kp = Kp * kpRatioR;
+                        newData.kd = Kd;
+                    }
+                    else
+                    {
+                        newData.mode = maxonMotor->CSP;
+                        newData.kp = 0.0;
+                        newData.kd = 0.0;
+                    }
                 }
-                
+
                 {
                     std::lock_guard<std::mutex> lock(maxonMotor->bufferMutex);
                     maxonMotor->commandBuffer.push(newData);

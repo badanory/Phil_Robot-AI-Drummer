@@ -110,24 +110,29 @@ def _is_greeting_wave(user_text: str) -> bool:
     return "안녕" in user_text and "반가워" in user_text
 
 
-_PAUSE_KEYWORDS = {"멈춰", "멈춰봐", "잠깐", "스톱", "정지", "그만", "일시정지", "pause"}
+_STOP_KEYWORDS = {"정지", "스톱", "잠깐", "그만", "멈춰", "멈춰봐"}
+_PAUSE_KEYWORDS = {"일시정지", "pause"}
 _RESUME_KEYWORDS = {"다시", "계속", "이어서", "재개", "resume"}
 
 
 def _detect_play_interrupt(user_text: str, adapted_state: dict):
     """
-    연주 중(state==2) pause/resume 발화를 감지한다.
+    연주 중(state==2) pause, 또는 일시정지 중(state==4) resume 발화를 감지한다.
     LLM 없이 키워드 매칭으로 직접 처리해 지연을 줄인다.
 
-    반환값: "pause" | "resume" | None
+    반환값: "stop_sequence" | "pause" | "resume" | None
     """
-    if adapted_state.get("state") != 2:
-        return None
+    current_state = adapted_state.get("state", 0)
     text = user_text.strip()
-    if any(kw in text for kw in _PAUSE_KEYWORDS):
-        return "pause"
-    if any(kw in text for kw in _RESUME_KEYWORDS):
+    
+    if current_state == 2:
+        if any(kw in text for kw in _STOP_KEYWORDS):
+            return "stop_sequence"
+        if any(kw in text for kw in _PAUSE_KEYWORDS):
+            return "pause"
+    if current_state == 4 and any(kw in text for kw in _RESUME_KEYWORDS):
         return "resume"
+        
     return None
 
 
@@ -167,7 +172,26 @@ def run_brain_turn(
     # 여기서 빠르게 내보내는 것이 사용자 체감에 직접적 영향을 준다.
     play_interrupt = _detect_play_interrupt(user_text, adapted_state)
     if play_interrupt is not None:
-        speech_map = {"pause": "잠깐 멈출게요.", "resume": "다시 연주할게요."}
+        speech_map = {"pause": "잠깐 멈출게요.", "resume": "다시 연주할게요.", "stop_sequence": "연주를 부드럽게 정지할게요."}
+        
+        if play_interrupt == "stop_sequence":
+            op_cmds = [
+                "tempo_scale:0.8",
+                "velocity_delta:-2",
+                "wait:1.0",
+                "tempo_scale:0.6",
+                "velocity_delta:-5",
+                "wait:1.0",
+                "tempo_scale:0.4",
+                "velocity_delta:-8",
+                "wait:1.0",
+                "tempo_scale:1.0",
+                "velocity_delta:0",
+                "stop"
+            ]
+        else:
+            op_cmds = [play_interrupt]
+
         classifier_result = {
             "intent": "stop_request",
             "needs_motion": False,
@@ -176,7 +200,7 @@ def run_brain_turn(
         }
         planner_result = {
             "skills": [],
-            "op_cmd": [play_interrupt],
+            "op_cmd": op_cmds,
             "speech": speech_map[play_interrupt],
             "reason": f"연주 중 {play_interrupt} 키워드 감지 → 직접 처리",
         }

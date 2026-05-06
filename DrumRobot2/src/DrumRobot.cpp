@@ -706,12 +706,35 @@ void DrumRobot::sendLoopForThread()
         sendLoopPeriod += chrono::microseconds(1000);  // 주기 : 1msec
         
         map<string, bool> fixFlags; // 각 모터의 고정 상태 저장
-        
-        if (!canManager.setCANFrame(fixFlags, cycleCounter))
-        {   
-            lastErrorReason = "위험 궤적 감지! 미들웨어가 모터 보호를 위해 무리한 움직임을 차단했습니다."; // 모터 송신 에러
+
+        // 연주 중: 생산자가 최소 2줄(MAX_MEASURE_BUFFER)을 채울 때까지 대기
+        if (state.main == Main::Play) {
+            std::unique_lock<std::mutex> lock(pathManager.measure_mutex);
+            pathManager.cv_empty.wait(lock, [this] {
+                return pathManager.measure_count >= pathManager.MAX_MEASURE_BUFFER
+                    || pathManager.endOfPlayCommand;
+            });
+        }
+
+        bool measure_ended = false, song_ended = false;
+        if (!canManager.setCANFrame(fixFlags, cycleCounter, measure_ended, song_ended))
+        {
+            lastErrorReason = "위험 궤적 감지! 미들웨어가 모터 보호를 위해 무리한 움직임을 차단했습니다.";
             state.main = Main::Error;
             break;
+        }
+
+        // 한 줄 소진: 카운트 줄이고 생산자에게 공간 확보 알림
+        if (measure_ended) {
+            std::unique_lock<std::mutex> lock(pathManager.measure_mutex);
+            if (pathManager.measure_count > 0) pathManager.measure_count--;
+            lock.unlock();
+            pathManager.cv_full.notify_one();
+        }
+
+        // 연주 완전 종료
+        if (song_ended) {
+            state.main = Main::Ideal;
         }
 
         if (cycleCounter == 0) // 5ms마다 실행
@@ -2044,19 +2067,21 @@ double DrumRobot::applyVelocityDelta(double value) const
     return next_value;
 }
 
+// measureMatrix에 악보 한 줄씩 읽어서 채움. --> timeSum이 threshold 넘으면 true 반환
 bool DrumRobot::readMeasure(ifstream& inputFile)
 {
-    // 이인우: stod 예외처리 해줘야 함
-
     string row;
     double timeSum = 0.0;
 
+    // 처음 measureMatrix이 1행 9열로 초기화되어있으므로, 첫 번째 행은 모두 0으로 채워진 상태임. (Source 164)
+
+    // txt의 두 번째 열(시간) 누적해서 timeSum 계산
     for (int i = 1; i < measureMatrix.rows(); i++)
     {
         timeSum += measureMatrix(i, 1);
     }
 
-    // timeSum이 threshold를 넘으면 true 반환
+    // timeSum이 threshold(2.4초, bpm 100의 4/4박자 악보 기준 한마디)를 넘으면 true
     if (timeSum > measureThreshold)
     {
         return true;
@@ -2064,48 +2089,44 @@ bool DrumRobot::readMeasure(ifstream& inputFile)
 
     while (getline(inputFile, row))
     {
-        istringstream iss(row);
-        string item;
-        vector<string> items;
+        istringstream iss(row); // iss = txt 파일의 행 스트림
+        string item; // item = 행의 각 요소 
+        vector<string> items; // items = 행의 요소들을 담는 벡터
 
         while (getline(iss, item, '\t'))
         {
-            item = trimWhitespace(item);
-            items.push_back(item);
+            item = trimWhitespace(item); // 공백 제거
+            items.push_back(item); // items 뒤에 item 추가
         }
 
         if (items[0] == "bpm")                          // bpm 변경 코드
         {
-            // cout << "\n bpm : " << pathManager.bpmOfScore;
             double score_bpm = stod(items[1]);
             pathManager.bpmOfScore = applyTempoScale(score_bpm);
-            // cout << " -> " << pathManager.bpmOfScore << "\n";
         }
         else if (items[0] == "end")                     // 종료 코드
         {
             endOfScore = true;
             return false;
         }
-        else if (stod(items[0]) < 0)                     // 종료 코드 (마디 번호가 음수)
+        else if (stod(items[0]) < 0)                     // 종료 코드 (마디 번호가 -1)
         {
             endOfScore = true;
             return false;
         }
         else
         {
+            // measureMatrix에 행 추가 (현재 행 수 + 1, 열 수는 그대로)
             measureMatrix.conservativeResize(measureMatrix.rows() + 1, measureMatrix.cols());
+            
+            // row의 요소들을 measureMatrix의 마지막 행에 채우기 (0~7열)
             for (int i = 0; i < 8; i++)
             {
-                double cell_value = stod(items[i]);
-                if (i == 4 || i == 5)
-                {
-                    cell_value = applyVelocityDelta(cell_value);
-                }
-
-                measureMatrix(measureMatrix.rows() - 1, i) = cell_value;
+                // velocity_delta는 PathManager::solveIKandPushCommands에서 kpRatio 스케일링으로 변환해서 적용.
+                measureMatrix(measureMatrix.rows() - 1, i) = stod(items[i]);
             }
 
-            // total time 누적
+            // total time 누적, 8열에 누적 시간 기록
             measureTotalTime += measureMatrix(measureMatrix.rows() - 1, 1) * 100.0 / pathManager.bpmOfScore;
             measureMatrix(measureMatrix.rows() - 1, 8) = measureTotalTime;
 
@@ -2120,17 +2141,6 @@ bool DrumRobot::readMeasure(ifstream& inputFile)
         }
     }
 
-    // // 루프가 끝난 후, 실패 원인 분석
-    // if (inputFile.eof()) {
-    //     cout << "getline()이 파일 끝(EOF)에 도달하여 종료되었습니다." << endl;
-    // }
-    // else if (inputFile.fail()) {
-    //     cout << "getline()이 논리적 오류로 실패했습니다." << endl;
-    // }
-    // else if (inputFile.bad()) {
-    //     cout << "getline()이 심각한 I/O 오류로 실패했습니다." << endl;
-    // }
-    // cout << measureMatrix;
     return false;
 }
 
@@ -2147,12 +2157,19 @@ void DrumRobot::checkPlayInterrupts()
             cout << ">>> [Play] 일시정지 요청." << endl;
             pause_requested = true;
         }
+        else if (command == "stop")
+        {
+            cout << ">>> [Play] 부드러운 정지(Graceful Stop) 시작..." << endl;
+            pathManager.is_graceful_stopping = true;
+        }
         else if (handleModifier(command))
         {
-            // 다음 마디부터 즉시 반영
             active_modifier = pending_modifier;
             pending_modifier = PlayModifier();
-            cout << ">>> [Play] modifier 즉시 적용." << endl;
+            // velocity_delta → IK 단계 kpRatio 스케일로 변환 후 PathManager에 전달
+            double vel_scale = std::max(0.1, 1.0 + static_cast<double>(active_modifier.velocity_delta) / 10.0);
+            pathManager.pending_vel_scale = vel_scale;
+            cout << ">>> [Play] modifier 즉시 적용 (vel_scale=" << vel_scale << ")." << endl;
         }
     }
 }
@@ -2193,10 +2210,11 @@ void DrumRobot::pauseStateRoutine()
                 }
                 else if (handleModifier(command))
                 {
-                    // Pause 중 modifier 즉시 적용 — resume 후 readMeasure에서 반영됨
                     active_modifier = pending_modifier;
                     pending_modifier = PlayModifier();
-                    cout << ">>> [Pause] modifier 적용. 재개 시 반영됩니다." << endl;
+                    double vel_scale = std::max(0.1, 1.0 + static_cast<double>(active_modifier.velocity_delta) / 10.0);
+                    pathManager.pending_vel_scale = vel_scale;
+                    cout << ">>> [Pause] modifier 적용. 재개 시 반영됩니다. (vel_scale=" << vel_scale << ")" << endl;
                 }
                 else
                 {
@@ -2226,8 +2244,24 @@ void DrumRobot::runPlayProcess()
         measureMatrix.resize(1, 9);
         measureMatrix = MatrixXd::Zero(1, 9);
         txtPath = txtBaseFolderPath + nextSongCode;
+        
+        // --- 추가된 로직 시작 ---
+        // 1. C++ 궤적 생성기의 이전 상태(허리 각도, 이전 목표 위치 등)를 Snare(기본) 위치로 초기화
+        pathManager.initPlayStateValue();
+        
+        // 2. 현재 허공에 멈춰있는 물리적 로봇 팔을 기본 Ready 자세로 부드럽게 이동
+        cout << ">>> [Auto] 연주 재개를 위해 Ready 자세로 부드럽게 복귀합니다..." << endl;
+        flagObj.setAddStanceFlag(FlagClass::READY);
+        runAddStanceProcess(); 
+        // --- 추가된 로직 끝 ---
+        
         pathManager.startOfPlay = true;
-        pathManager.endOfPlayCommand = false; // [수정] Resume 시 초기화 누락 방지
+        pathManager.endOfPlayCommand = false; // Resume 시 초기화 누락 방지
+        {
+            double vel_scale = std::max(0.1, 1.0 + static_cast<double>(active_modifier.velocity_delta) / 10.0);
+            pathManager.pending_vel_scale = vel_scale;
+            pathManager.active_vel_scale  = vel_scale;
+        }
         arduino.setHeadLED(Arduino::PLAYING);
         cout << ">>> [Resume] '" << nextSongCode << "' 파일 인덱스 "
              << play_file_index << " 에서 재개합니다." << endl;
@@ -2309,6 +2343,12 @@ void DrumRobot::runPlayProcess()
         pathManager.kpMax = 300.0;
 
         cout << ">>> [System] 연주 시작 트리거 (Start)" << endl;
+        pathManager.is_graceful_stopping = false;
+        {
+            double vel_scale = std::max(0.1, 1.0 + static_cast<double>(active_modifier.velocity_delta) / 10.0);
+            pathManager.pending_vel_scale = vel_scale;
+            pathManager.active_vel_scale  = vel_scale;
+        }
         pathManager.startOfPlay = true;
     } // end of fresh-start block
 

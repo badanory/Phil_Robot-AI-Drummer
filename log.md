@@ -3,6 +3,62 @@
 프로젝트에서 의미 있는 변경을 할 때마다 한국시간(KST, UTC+9) 기준의 날짜, 시간, 요약을 기록합니다.
 최신 항목이 위로 오도록 추가합니다.
 
+## 2026-04-29
+- 23:28 KST (UTC+9) — fix: motors 동시 접근 Race Condition 및 tempFrames 힙 오염 해결
+  - 수정 파일: `DrumRobot2/include/motors/Motor.hpp`, `DrumRobot2/src/CanManager.cpp`, `DrumRobot2/src/DrumRobot.cpp`
+  - 세부 내용:
+    - **stateMutex 추가** (`Motor.hpp`): `GenericMotor`에 `stateMutex` 추가. recvThread(쓰기)와 sendThread(읽기)가 `motorPosition`, `jointAngle` 등을 동시에 접근하는 Race Condition 차단.
+    - **distributeFramesToMotors 락 적용** (`CanManager.cpp`): TMotor/MaxonMotor 상태 필드 쓰기 블록을 `lock_guard<mutex>(stateMutex)`로 보호.
+    - **calTorque 스냅샷 적용** (`CanManager.cpp`): `maxonMotor->motorPosition`, `maxonMotor->jointAngle` 읽기 시 stateMutex 스냅샷. `tMotor->jointAngle` 읽기 시 개별 stateMutex 락.
+    - **tempFrames per-vector clear** (`CanManager.cpp`): 100us 주기 `tempFrames.clear()`(맵 노드 전체 해제)를 `kv.second.clear()`(벡터 내용만 비우기)로 교체. 힙 재할당/해제 반복 제거.
+    - **cv_empty.wait 조건 수정** (`DrumRobot.cpp`): `measure_count >= MAX_MEASURE_BUFFER` → `measure_count > 0`. sendThread가 버퍼에 1개라도 있으면 바로 소비하도록 수정 (원래 설계 의도 복원).
+  - 메모: segfault 원인은 motors 맵 동시 접근으로 인한 힙 메타데이터 손상 + tempFrames.clear() 100us 반복 힙 할당/해제. cv_empty.wait >= 2 조건은 sendThread를 불필요하게 블락해 충돌 빈도를 높이던 구현 버그.
+
+- 11:13 KST (UTC+9) — docs: GDB/ASAN 디버깅 가이드 작성
+  - 수정 파일: `docs/debugging_guide.md`
+  - 메모: tempFrames segfault 분석 과정을 예시로, Makefile debug/asan 타겟 추가법·GDB 멀티스레드 추적·ASAN 실행법을 정리.
+
+## 2026-04-28
+- 14:18 KST (UTC+9) — fix: 고빈도 메모리 할당/해제로 인한 SIL 모드 Segmentation Fault 해결
+  - 수정 파일: `DrumRobot2/src/CanManager.cpp`
+  - 메모: `recvLoopForThread` (100us 주기) 내에서 `tempFrames.clear()` 호출 시 map 노드가 통째로 해제되고 다음 루프에서 재할당되는 과정이 초당 만 번 이상 발생하여 Heap Memory Corruption 및 `motors` iterator segfault를 유발함. 맵 노드를 해제하지 않고 내부 vector만 비우도록(`pair.second.clear()`) 수정하여 메모리 안정성 확보.
+
+## 2026-04-27
+- 13:10 KST (UTC+9) — fix: velocity_delta modifier를 IK 경계로 이동하여 stop과 latency 정렬
+  - 수정 파일: `DrumRobot2/include/managers/PathManager.hpp`, `DrumRobot2/include/managers/CanManager.hpp`, `DrumRobot2/src/PathManager.cpp`, `DrumRobot2/src/CanManager.cpp`, `DrumRobot2/src/DrumRobot.cpp`
+  - 세부 내용:
+    - **velocity modifier 이동**: `readMeasure()` 파싱 단계(~3s latency)에서 `solveIKandPushCommand()` 진입부(~1.2s latency)로 이동. stop 명령과 동일한 IK 경계에서 `pending_vel_scale → active_vel_scale` 커밋 후 kpRatio에 스케일링 적용.
+    - **pushCommandBuffer 버그 수정**: `is_last_measure` 단일 파라미터를 `is_measure_end` / `is_last_measure` 두 파라미터로 분리.
+    - **pathManager.Kp 수정**: `PathManager::pushCommandBuffer()` 내부의 `pathManager.Kp` → `Kp` (self 참조 오류).
+    - **setCANFrame 리팩토링**: `CanManager::setCANFrame`의 `pathManager`/`state` 직접 참조 제거. bounded buffer 로직을 `sendLoopForThread()`로 이동. `out_measure_ended`, `out_song_ended` 출력 파라미터 추가.
+  - 메모: `tempo_scale`은 readMeasure에서 시간 이산화에 사용되어 이동 불가(3s latency 유지). CSP 모드에서는 velocity_delta 효과 없음.
+  - 추가 파일: `docs/modifier_latency_alignment.md`
+
+## 2026-04-22
+- 11:20 KST (UTC+9) — feat: 드럼 로봇의 자연스러운 연주 종료 (Graceful Stop) 구현 완료
+  - 수정 파일: `DrumRobot2/include/motors/Motor.hpp`, `DrumRobot2/include/managers/PathManager.hpp`, `DrumRobot2/src/PathManager.cpp`, `DrumRobot2/src/CanManager.cpp`, `DrumRobot2/src/DrumRobot.cpp`
+  - 세부 내용:
+    - **동기화**: `PathManager`에 `measure_mutex`, `cv_full/empty`를 도입하여 생산자-소비자(Bounded Buffer, 크기 2) 패턴 구현.
+    - **생산자(PathManager)**: `solveIKandPushCommand`에서 큐가 차면 대기하고, 각 마디의 마지막 데이터에 `is_measure_end` 플래그 주입. `is_graceful_stopping` 시 연주의 끝에 `is_last_measure` 심음.
+    - **소비자(CanManager)**: `setCANFrame`에서 데이터를 소비하며 마디 종료 시 생산자에게 알림(`notify_one`). 전체 종료 플래그 감지 시 `Ideal` 상태로 전이.
+    - **명령 처리(DrumRobot)**: `checkPlayInterrupts`에서 `stop` 명령 수신 시 즉시 종료하지 않고 부드러운 정지 시퀀스(`is_graceful_stopping`) 가동.
+  - 메모: `GEMINI.md`에 `log.md` 기록 정책을 추가하고 모든 C++ 코드를 수술적으로 수정 완료함.
+
+## 2026-04-22
+- 10:45 KST (UTC+9) — design: 드럼 로봇의 자연스러운 연주 종료 (Graceful Stop) 설계
+  - 수정 파일: `docs/graceful_stop_design.md`
+  - 메모: Bounded Buffer 기반 동기화 및 종료 시퀀스 구조 설계.
+
+## 2026-04-21
+- 09:52 KST (UTC+9) — fix: 연주 재개(resume) 시 궤적이 꺾이거나 로봇이 동작을 거부하는 문제 해결
+  - 수정 파일: `DrumRobot2/src/DrumRobot.cpp`
+  - 메모: 일시정지 후 재개할 때, 물리적 로봇의 현재 위치(중간 멈춤)와 다음 생성될 궤적의 시작점(이전 마디 종료점) 간격이 너무 커서 CAN 안전 검사(`safetyCheckSendT`)에서 차단되던 현상 수정. Resume 시 C++ 내부 궤적 변수를 초기화(`initPlayStateValue`)하고 `runAddStanceProcess()`를 호출하여 멈췄던 이상한 자세에서 먼저 `Ready` 자세로 부드럽게 복귀한 후 다음 궤적을 연주하도록 개선.
+
+## 2026-04-21
+- 09:41 KST (UTC+9) — fix: 연주 일시정지(pause) 시 시뮬레이션에서 'o' 누르기 이전(Startup) 자세로 돌아가버리는 문제 수정
+  - 수정 파일: `drum_intheloop/sil/SilCommandPipeReader.py`
+  - 메모: `IDLE_RETURN_SEC` 타임아웃에 의한 `startup_joint_targets_deg` 복귀 로직을 제거하고, 빈 tick이라도 항상 PyBullet `step()`과 vcan 피드백을 유지하도록 수정. 연주 일시정지 시 로봇이 현재 자세를 올바르게 유지함.
+
 ## 2026-04-20
 - 15:53 KST (UTC+9) — 문서 현행화: README 및 아키텍처 문서에 점진적 파일 기반 실행(Incremental File-Based Execution) 및 일시정지/재개(Pause/Resume) 매커니즘 반영
   - 수정 파일: `README.md`, `phil_robot/docs/LLM_PIPELINE_ARCHITECTURE_KR.md`
